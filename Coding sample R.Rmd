@@ -1,0 +1,181 @@
+---
+title: 'Coding sample - R'
+author: "Alexia Witthaus Viñé"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: no
+    toc_depth: '2'
+  prettydoc::html_pretty:
+    df_print: kable
+    highlight: vignette
+    theme: lumen
+    toc: no
+    toc_depth: 2
+    toc_float:
+      collapsed: no
+  html_document:
+    df_print: paged
+    toc: no
+    toc_depth: '2'
+---
+
+Github repo: 
+
+
+```{r, echo = FALSE, message = FALSE }
+library(ggplot2)
+library(dplyr)
+library(nnet)
+library(MASS)
+library(naivebayes)
+library(splitTools)
+library(openalexR)
+library(tidyverse)
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning = FALSE, fig.width = 16/2, fig.height = 9/2, tidy.opts=list(width.cutoff=60), tidy=TRUE)
+```
+
+
+# Part 1 : Code for Expected Prediction Error for Naive Bayes' Classifier
+
+
+```{r}
+setwd("/Users/alexiawitthaus/Library/CloudStorage/OneDrive-EmoryUniversity/Fall 22-Alexia’s MacBook Air/Statistical learning/Problem set 4 ")
+wineTrain <- read.csv("wineTrain.csv")
+wineTrain$Class <- as.factor(wineTrain$Class)
+```
+
+```{r}
+#Naive Bayes
+set.seed(12345)
+folds <- splitTools::create_folds(seq(1, nrow(wineTrain)), k=10, type='basic')
+kf_NB_deviance <- c()
+kf_NB_misclass <- c()
+
+for (i in 1:length(folds)) {
+  #Train the Model 
+  nb_model <- naive_bayes(Class ~ ., data=wineTrain[folds[[i]], ])
+  #Predict class for misclassification rate, and probability for deviance
+  nb_k_pred <- predict(nb_model, wineTrain[-folds[[i]], ], type = 'class')
+  df<- as.data.frame(predict(nb_model, wineTrain[-folds[[i]], ], type = 'prob'))
+  #Compute Misclassification Rate
+  kf_NB_misclass[i]<- mean(wineTrain[-folds[[i]], ]$Class != nb_k_pred)
+  probs<- NULL
+  true_class <- wineTrain[-folds[[i]], ]$Class
+  #Get the probability for true class
+  for (j in 1:nrow(df)){
+  probs[j]<- df[j,true_class[j]]
+  }
+  #Calculate deviance for each fold
+  kf_NB_deviance[i]<- -2*sum(log(probs))
+}
+mean(kf_NB_deviance)
+mean(kf_NB_misclass)
+```
+
+
+# Part 2 : Part Code Developed as part of the Data Cleaning Process for Research
+
+The goal of this part of the project was to 
+
+1. get the number of references in each article of a database and 
+2. Get the DOIS of the articles that did not have an OpenAlexID. 
+
+In order to do this, I used the OpenalexR package, and the oa_fetch function, that called the API. 
+
+
+The primary issue encountered  is due to the size of the data frame, and  given that I needed to access the API more times than I was allowed to, the package gave me random Null values. This means that I would get articles listed as not having an OpenAlexID, when in reality they did. This was problematic, since it would invalidate all our results and wouldn't allow us to create the network properly. 
+
+I solved this by creating an outer loop and looping several times over those articles that initially gave us an NA. As the size of the outer loop increases, the probability of a random error decreases. 
+
+```{r}
+
+setwd("~/Library/CloudStorage/OneDrive-EmoryUniversity/Fall 22-Alexia’s MacBook Air/Qtm research")
+
+#import data
+experts<- as_tibble(read.csv( "academicexpert_articles.csv"))
+#exclude article without doi
+experts_DOI<- filter(experts, !is.na(experts$DOI))
+#exclude repetitive doi
+experts_DOI_unique <- distinct(experts_DOI, experts_DOI$DOI, .keep_all = TRUE)
+
+```
+
+
+```{r}
+#Write functions to make data cleaning easier 
+
+### Function that counts the number of references in for each article found
+count_num_ref<- function(request){
+      references<- request$referenced_works
+      num_references<- sum(!is.na(as.data.frame(references)))
+      return(num_references)
+}
+
+
+### Function that keeps unique values in list to find ID's that are preserved over iterations
+vec_no_oa<- function(num_iter, list){
+  dois_with_no_OpenAlex <- unlist(list)
+  dois_with_no_OpenAlex <- unique(dois_with_no_OpenAlex[dois_with_no_OpenAlex %in%       unique(dois_with_no_OpenAlex)[table(dois_with_no_OpenAlex) == num_iter]])
+  return(dois_with_no_OpenAlex)
+}
+
+
+```
+
+
+```{r, results = 'hide'}
+#Create empty list for DOIs that don't have OpenAlexID
+dois_with_no_OpenAlex <- list()
+
+
+# Add columns to the expert_DOI database to add number of referenced work in each article
+experts_DOI_unique <- experts_DOI_unique %>% mutate(openalex_id = NA,
+                                                    num_references = NA)
+
+#Account for random error in OpenAlexR package
+num_iterations <- 3
+
+for(iteration in 1:num_iterations){
+  
+  for (i in 1:30){
+    doi <- experts_DOI_unique$DOI[i]
+    #This statement runs for every article in iteration 1, or each article that is within the list of NAs
+    if(iteration == 1 | (iteration > 1 & doi %in% dois_with_no_OpenAlex )){
+        #Call the API
+        oa_request <- oa_fetch(doi = doi)
+        #If it gives you Null, fill columns created earlier with NA, and append article to list
+        if(is.null(oa_request)){
+        experts_DOI_unique$openalex_id[i]<- NA
+        experts_DOI_unique$num_references[i] <- NA
+        dois_with_no_OpenAlex <- append(dois_with_no_OpenAlex, doi)
+        # If the article is found , sum articles found, and append the number to the columns coded earlier
+        }else{
+        num_ref <- count_num_ref(request = oa_request)
+        experts_DOI_unique$num_references[i] <- num_ref
+        experts_DOI_unique$openalex_id[i] <- oa_request$id
+        }
+      }
+    }
+  }
+
+```
+
+
+
+```{r}
+#DOIs that don't have OpenAlexID
+dois_with_no_OpenAlex <- vec_no_oa(num_iterations, dois_with_no_OpenAlex)
+print(dois_with_no_OpenAlex)
+```
+
+
+```{r}
+set.seed(12345)
+random_number <- sample.int(30, 5)
+#Number of references in each article, random sample of 5 rows
+experts_DOI_unique[random_number , c('DOI', 'openalex_id', 'num_references')]
+```
+
+
+
